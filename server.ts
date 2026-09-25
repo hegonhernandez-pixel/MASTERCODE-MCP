@@ -297,7 +297,7 @@ let deployedAgents: ServerDeployedAgent[] = [
       filePermissionApi: true,
       repoDockerApi: true,
     },
-    terminalsOpen: false,
+    terminalsOpen: true,
     terminalInputs: {
       repoAndDocker: 'git clone https://github.com/master-code-mcp/agent-synthesizer.git && ./start-multi-chip.sh',
       personality: 'Orquestador decisivo, conciliador dialéctico y generador de especificaciones de ingeniería ejecutables.',
