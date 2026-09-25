@@ -1,0 +1,7 @@
+{
+  "name": "MasterCode MCP - Cuatri-Agente Cognitivo",
+  "description": "Orquestador de 4 agentes cognitivos (Analítico, Resolutivo, Crítico y Sintetizador) con integración MCP, Docker multi-chip y generación de especificaciones ejecutables para creadores de aplicaciones.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
