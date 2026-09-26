@@ -3,7 +3,11 @@ import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI } from '@google/genai';
-
+import { agent1RequestHandler } from './src/a2a/agent1.js';
+import {agentCardHandler, jsonRpcHandler, restHandler, UserBuilder } from '@a2a-js/sdk/server/express';
+import { AGENT_REGISTRY, refreshRegistryAvailability, addDirective, toggleDirective, getAgent } from './src/agents/registry.js';
+import { runDeliberation } from './src/agents/orchestration.js';
+import { CONTEXT_COMPRESSION_DIRECTIVE_TEMPLATE } from './src/agents/directives.js';
 dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
@@ -25,32 +29,16 @@ const ai = process.env.GEMINI_API_KEY
     })
   : null;
 
-// Health check endpoint
-app.get('/api/health', (_req: Request, res: Response) => {
-  res.json({
-    status: 'ok',
-    hasGeminiKey: Boolean(process.env.GEMINI_API_KEY),
-    model: 'gemini-3.8-flash',
-    assignedModels: {
-      agent1: 'Claude Code (Anthropic Claude 3.7 / Opus)',
-      agent2: 'GPT-4o (OpenAI)',
-      agent3: 'Gemini 2.5 Pro (Google)',
-      agent4: 'Gemini 3.8 Flash / Pro (Google)',
-    },
-    timestamp: new Date().toISOString(),
-  });
-});
-
-// MasterCode MCP Server - In-Memory Store of Deployed AI Agents
+// Tipo mínimo para los agentes desplegados en el servidor MasterCode MCP
 interface ServerDeployedAgent {
   id: string;
   name: string;
   role: string;
   description: string;
   implementation: string;
-  status: 'deployed' | 'idle' | 'executing';
+  status: string;
   model: {
-    engine: 'claude-code' | 'gpt' | 'gemini';
+    engine: string;
     modelName: string;
     badge: string;
     providerIcon: string;
@@ -60,16 +48,16 @@ interface ServerDeployedAgent {
     biasDirective: string;
     symbolicLink: string;
     decisionRules: string[];
-    contextSummary?: string;
+    contextSummary: string;
   };
   repositoryConfig: {
     remoteUrl: string;
     branch: string;
     tokenConfigured: boolean;
     hasDeployYml: boolean;
-    lastSyncStatus: 'synced' | 'pending' | 'unconfigured' | 'error';
-    lastPushTimestamp?: string;
-    commitHash?: string;
+    lastSyncStatus: string;
+    lastPushTimestamp: string;
+    commitHash: string;
   };
   enabledApis: {
     videoGenerationApi: boolean;
@@ -92,6 +80,22 @@ interface ServerDeployedAgent {
     lastAction: string;
   };
 }
+
+// Health check endpoint
+app.get('/api/health', (_req: Request, res: Response) => {
+  res.json({
+    status: 'ok',
+    hasGeminiKey: Boolean(process.env.GEMINI_API_KEY),
+    model: 'gemini-3.8-flash',
+    assignedModels: {
+      agent1: 'Claude Code (Anthropic Claude 3.7 / Opus)',
+      agent2: 'GPT-4o (OpenAI)',
+      agent3: 'Gemini 2.5 Pro (Google)',
+      agent4: 'Gemini 3.8 Flash / Pro (Google)',
+    },
+    timestamp: new Date().toISOString(),
+  });
+});
 
 let deployedAgents: ServerDeployedAgent[] = [
   {
@@ -349,105 +353,102 @@ app.post('/api/agents/:id/symlink', (req: Request, res: Response) => {
   });
 });
 
-// Endpoint: List all deployed agents on MasterCode MCP Server
-app.get('/api/agents', (_req: Request, res: Response) => {
+// ENDPOINT: Registro central de agentes (V2) — fuente única de verdad.
+// Reemplaza el viejo /api/agents (que leía localAgentsConfig por separado
+// y ocultaba modelos mal configurados). Cada agente trae su disponibilidad
+// real y, si falla, el error real (no un mensaje genérico).
+app.get('/api/agents', async (_req: Request, res: Response) => {
+  await refreshRegistryAvailability();
+
   res.json({
     success: true,
-    server: 'MasterCode MCP Server v1.0.1',
-    transport: 'stdio',
-    totalDeployed: deployedAgents.length,
-    agents: deployedAgents,
+    server: 'MasterCode MCP Server v2 (registro central)',
+    totalRegistered: AGENT_REGISTRY.length,
+    totalAvailable: AGENT_REGISTRY.filter((a) => a.runtime.available).length,
+    agents: AGENT_REGISTRY.map((a) => ({
+      id: a.id,
+      name: a.name,
+      role: a.role,
+      provider: a.provider,
+      model: a.modelName,
+      isLocal: a.isLocal,
+      available: a.runtime.available,
+      lastError: a.runtime.lastError,
+      lastCheckedAt: a.runtime.lastCheckedAt,
+      directives: a.directives,
+    })),
   });
 });
 
-// Endpoint: Deploy a new AI Agent to MasterCode MCP Server
-app.post('/api/agents', (req: Request, res: Response) => {
+// ENDPOINT: Deliberación multi-agente — orquestación de 7 pasos (V2).
+app.post('/api/orchestrate-local', async (req: Request, res: Response) => {
   try {
-    const {
-      name,
-      role,
-      description,
-      modelEngine,
-      modelName,
-      matrixOfThought,
-      biasDirective,
-      symbolicLink,
-      decisionRules,
-      remoteUrl,
-      branch,
-      personalAccessToken,
-      enabledApis
-    } = req.body;
+    const { topic } = req.body;
 
-    if (!name || !role) {
-      res.status(400).json({ error: 'Nombre y Rol del agente son obligatorios.' });
+    if (!topic || typeof topic !== 'string') {
+      res.status(400).json({ error: 'Campo "topic" requerido' });
       return;
     }
 
-    const newId = `agent-${Date.now()}`;
-    const engine = modelEngine || 'gemini';
-    const computedModelName = modelName || (
-      engine === 'claude-code' ? 'Claude Code (Anthropic Claude 3.7)' :
-      engine === 'gpt' ? 'GPT-4o (OpenAI)' : 'Gemini 3.8 Flash (Google)'
-    );
+    console.log(`\n🎯 Iniciando deliberación (7 pasos) sobre: "${topic}"`);
 
-    const newAgent: ServerDeployedAgent = {
-      id: newId,
-      name,
-      role,
-      description: description || `Agente especializado en ${role}, desplegado activamente en el servidor MasterCode MCP.`,
-      implementation: `Desplegado en runtime MasterCode MCP con transporte Stdio y registro dinámico de herramientas para ${role}.`,
-      status: 'deployed',
-      model: {
-        engine,
-        modelName: computedModelName,
-        badge: `${computedModelName} Agent Engine`,
-        providerIcon: engine,
-      },
-      cognitiveArchitecture: {
-        matrixOfThought: matrixOfThought || 'Matriz de pensamiento deductiva y orientada a la verificación continua.',
-        biasDirective: biasDirective || 'Enfoque deliberativo estricto en el ámbito asignado.',
-        symbolicLink: symbolicLink || `symlink://identity/custom/${newId}`,
-        decisionRules: Array.isArray(decisionRules) && decisionRules.length > 0 ? decisionRules : [
-          'Mantener coherencia cognitiva con las directivas rectoras',
-          'Utilizar exclusivamente las APIs habilitadas por el orquestador'
-        ],
-        contextSummary: 'Agente generado y desplegado autónomamente en el servidor MCP.'
-      },
-      repositoryConfig: {
-        remoteUrl: remoteUrl || `https://github.com/master-code-mcp/${newId}.git`,
-        branch: branch || 'main',
-        tokenConfigured: Boolean(personalAccessToken),
-        hasDeployYml: true,
-        lastSyncStatus: personalAccessToken ? 'synced' : 'pending',
-        lastPushTimestamp: new Date().toISOString(),
-        commitHash: Math.random().toString(16).substring(2, 10) + Math.random().toString(16).substring(2, 10),
-      },
-      enabledApis: {
-        videoGenerationApi: Boolean(enabledApis?.videoGenerationApi ?? true),
-        webInteractionApi: Boolean(enabledApis?.webInteractionApi ?? true),
-        fileReaderApi: Boolean(enabledApis?.fileReaderApi ?? true),
-        fileConverterApi: Boolean(enabledApis?.fileConverterApi ?? true),
-        filePermissionApi: Boolean(enabledApis?.filePermissionApi ?? true),
-        repoDockerApi: Boolean(enabledApis?.repoDockerApi ?? true),
-      },
-      metrics: {
-        invocations: 1,
-        uptime: '100%',
-        lastAction: 'Agente desplegado exitosamente en el servidor MCP',
-      }
-    };
+    await refreshRegistryAvailability();
+    const state = await runDeliberation(topic);
 
-    deployedAgents.push(newAgent);
-
-    res.status(201).json({
+    res.json({
       success: true,
-      message: `Agente '${name}' desplegado con éxito en el servidor MasterCode MCP.`,
-      agent: newAgent,
+      topic,
+      deliberationState: state,
+      finalResult: state.finalResult,
+      synthesizerAgentId: state.synthesizerAgentId,
     });
   } catch (err: any) {
-    res.status(500).json({ error: 'Error al desplegar agente: ' + err.message });
+    res.status(500).json({
+      error: 'Error en orquestación',
+      message: err.message,
+    });
   }
+});
+
+// ENDPOINT: Directivas operativas de agente (memoria de agente — V2 sección 5).
+app.get('/api/agents/:id/directives', (req: Request, res: Response) => {
+  const agent = getAgent(req.params.id);
+  if (!agent) {
+    res.status(404).json({ error: 'Agente no encontrado' });
+    return;
+  }
+  res.json({ success: true, directives: agent.directives });
+});
+
+app.post('/api/agents/:id/directives', (req: Request, res: Response) => {
+  const { kind, description, config } = req.body;
+  if (!kind || !description) {
+    res.status(400).json({ error: 'Campos "kind" y "description" requeridos' });
+    return;
+  }
+  // Atajo: si piden la directiva de compresión de contexto sin más detalle,
+  // usa la plantilla ya definida.
+  const base =
+    kind === 'context-compression'
+      ? { ...CONTEXT_COMPRESSION_DIRECTIVE_TEMPLATE, description }
+      : { kind, description, active: true, config };
+
+  const created = addDirective(req.params.id, base);
+  if (!created) {
+    res.status(404).json({ error: 'Agente no encontrado' });
+    return;
+  }
+  res.json({ success: true, directive: created });
+});
+
+app.put('/api/agents/:id/directives/:directiveId', (req: Request, res: Response) => {
+  const { active } = req.body;
+  const ok = toggleDirective(req.params.id, req.params.directiveId, Boolean(active));
+  if (!ok) {
+    res.status(404).json({ error: 'Agente o directiva no encontrados' });
+    return;
+  }
+  res.json({ success: true });
 });
 
 // Endpoint: Update Cognitive Architecture of a specific Agent
@@ -1584,7 +1585,9 @@ app.post('/api/execute-pipeline', async (req: Request, res: Response) => {
 
 async function startServer() {
   const isProd = process.env.NODE_ENV === 'production';
-
+  app.use('/.well-known/agent-card.json', agentCardHandler({ agentCardProvider: agent1RequestHandler }));
+  app.use('/a2a/agent1', jsonRpcHandler({ requestHandler: agent1RequestHandler, userBuilder: UserBuilder.noAuthentication }));
+  app.use('/a2a/agent1', restHandler({ requestHandler: agent1RequestHandler, userBuilder: UserBuilder.noAuthentication }));
   if (!isProd) {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({

@@ -72,13 +72,120 @@ export interface UserIdentityPrinciples {
   };
 }
 
-export type ModelProvider = 'claude-code' | 'gpt' | 'gemini';
+export type ModelProvider =
+  | 'ollama'
+  | 'electron-llm' // LM Studio, Jan.ai u otras apps Electron con endpoint HTTP compatible OpenAI
+  | 'gemini'
+  | 'github-copilot'
+  | 'claude-code'
+  | 'gpt';
 
 export interface AgentModelConfig {
   engine: ModelProvider;
   modelName: string;
   badge: string;
   providerIcon: string;
+}
+
+// ---------------------------------------------------------------------------
+// V2: Agente ≠ Modelo ≠ Tool ≠ Personalidad
+// ---------------------------------------------------------------------------
+
+/** Ejemplo few-shot para moldear tono/actitud. Requiere confirmación manual del usuario antes de agregarse. */
+export interface PersonaExample {
+  id: string;
+  input: string;
+  output: string;
+  confirmedByUser: boolean;
+  addedAt: string;
+}
+
+/** Capa de personalidad: directrices base (fijas) + examples (capa adaptativa, nunca pisa rol/permisos). */
+export interface AgentPersonality {
+  history: string;
+  instructions: string;
+  attitude: string;
+  style: string;
+  examples: PersonaExample[];
+}
+
+/**
+ * Directiva operativa aprendida: no es sobre tono (eso es AgentPersonality.examples),
+ * es sobre cómo opera el agente (ej. compresión de contexto).
+ */
+export interface AgentDirective {
+  id: string;
+  description: string;
+  addedAt: string;
+  active: boolean;
+  /** Identificador interno de la lógica que ejecuta la directiva, ej. 'context-compression'. */
+  kind: string;
+  config?: Record<string, unknown>;
+}
+
+/** Capa de permisos/capacidades — independiente del modelo y de la personalidad. */
+export interface AgentCapabilityPermissions {
+  filesystem: boolean;
+  gitRepos: boolean; // incluye crear/ser dueño de un repo propio
+  workflowExecution: boolean; // operar dentro de un CI/workflow, no solo commits sueltos
+  process: boolean;
+  docker: boolean;
+  externalApis: boolean;
+  mcp: boolean;
+}
+
+/** Estado en tiempo real de un agente: disponibilidad, endpoint, último error real (no oculto). */
+export interface AgentRuntimeState {
+  available: boolean;
+  endpoint: string;
+  lastCheckedAt?: string;
+  lastError?: string;
+}
+
+/** Registro central de un agente. Fuente única de verdad (evita duplicar frontend/backend). */
+export interface AgentDefinition {
+  id: string;
+  role: 'analytical' | 'solver' | 'critic' | 'synthesizer';
+  name: string;
+  provider: ModelProvider;
+  modelName: string;
+  isLocal: boolean; // determina si entra en el gobierno de concurrencia local
+  personality: AgentPersonality;
+  directives: AgentDirective[];
+  capabilities: AgentCapabilityPermissions;
+  runtime: AgentRuntimeState;
+}
+
+// ---------------------------------------------------------------------------
+// V2: Orquestación de deliberación (7 pasos explícitos)
+// ---------------------------------------------------------------------------
+
+export type DeliberationStepName =
+  | 'independent-generation'
+  | 'exchange-discussion'
+  | 'individual-review'
+  | 'resolution-prospective'
+  | 'cross-review'
+  | 'validation'
+  | 'delivery';
+
+export interface DeliberationStepLog {
+  step: DeliberationStepName;
+  stepIndex: number; // 1..7
+  agentId: string;
+  startedAt: string;
+  finishedAt?: string;
+  output?: string;
+  error?: string;
+}
+
+export interface DeliberationState {
+  topic: string;
+  startedAt: string;
+  finishedAt?: string;
+  steps: DeliberationStepLog[];
+  synthesizerAgentId?: string;
+  finalResult?: string;
 }
 
 export interface AnalyticalAgentData {

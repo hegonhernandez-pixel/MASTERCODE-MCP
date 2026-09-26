@@ -1,0 +1,16 @@
+{
+    "editor.formatOnSave": true,
+    "files.autoSave": "onWindowChange",
+    "editor.defaultFormatter": "DEVSENSE.composer-php-vscode",
+    "editor.wordWrap": "on",
+    "files.exclude": {
+        "": true
+    },
+    "editor.autoClosingComments": "always",
+    "editor.autoIndentOnPaste": true,
+    "editor.codeActions.triggerOnFocusChange": true,
+    "editor.experimental.asyncTokenizationLogging": true,
+    "editor.foldingImportsByDefault": true,
+    "editor.gotoLocation.alternativeReferenceCommand": "editor.action.goToImplementation",
+    "editor.hideCursorInOverviewRuler": true
+}
